@@ -1,0 +1,6 @@
+gym
+tensorflow
+keras
+gym[atari]
+autorom
+ipykernel
