@@ -3,3 +3,4 @@ gym[atari]
 autorom
 ipykernel
 torch
+gym[other]
