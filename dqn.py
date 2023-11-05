@@ -1,110 +1,240 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from collections import deque
+from tqdm import tqdm
+import copy
 import random
 import numpy as np
-from collections import deque
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.optimizers import Adam
 import gym
-from tensorflow.keras import models, layers
-import random
 
-env = gym.make("Breakout-v0", obs_type='grayscale')
-#env = gym.wrappers.RecordVideo(env, video_folder='videos/',name_prefix='atari' ,episode_trigger=lambda x: x % 200 == 0)
+class DQN(nn.Module):
+    def __init__(self, action_size):
+        super(DQN, self).__init__()
 
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)  # Assuming input_shape is (channels, height, width)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
 
+        # Compute the size of the output of the last conv layer
+        def conv2d_size_out(size, kernel_size=3, stride=1):
+            return (size - (kernel_size - 1) - 1) // stride + 1
 
-def build_model(action_size):
-    model = models.Sequential()
-    model.add(layers.Conv2D(32, (8, 8), strides=(4, 4), activation='relu', input_shape=(84, 84, 4)))
-    model.add(layers.Conv2D(64, (4, 4), strides=(2, 2), activation='relu'))
-    model.add(layers.Conv2D(64, (3, 3), activation='relu'))
-    model.add(layers.Flatten())
-    model.add(layers.Dense(512, activation='relu'))
-    model.add(layers.Dense(action_size, activation='linear'))
-    model.compile(loss='mse', optimizer=Adam(lr=0.001))
-    return model
+        convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(84, 8, 4), 4, 2), 3, 1)
+        convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(84, 8, 4), 4, 2), 3, 1)
+        linear_input_size = convw * convh * 64
 
-
-
-class ReplayBuffer:
-    def __init__(self, buffer_size):
-        self.buffer = deque(maxlen=buffer_size)
-
-    def add(self, experience):
-        self.buffer.append(experience)
-
-    def sample(self, batch_size):
-        return random.sample(self.buffer, batch_size)
+        self.fc = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(linear_input_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, action_size)
+        )
 
 
+    def forward(self, x):
 
-# Set parameters
-N = 10000  # Replay memory capacity
-M = 1000  # Number of episodes
-T = 10000  # Max steps per episode
-C = 1000  # Target network update frequency
-action_size = env.action_space.n  # Number of actions
-state_size = env.observation_space.shape[0]  # State size
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.relu(self.conv3(x))
 
-# Initialize replay memory
-D = deque(maxlen=N)
+        return self.fc(x)
 
-
-Q = build_model(action_size)
-Q_hat = build_model(action_size)
-Q_hat.set_weights(Q.get_weights())
-
-# Preprocess function
-def preprocess_state(state):
-    return np.reshape(state, [1, state_size])
-
-# Train
-epsilon = 1.0  # Exploration rate
-epsilon_min = 0.01
-epsilon_decay = 0.995
-gamma = 0.95  # Discount rate
-M = 1
-
-for episode in range(M):
-    state = preprocess_state(env.reset())
-    total_reward = 0
-    for t in range(T):
-        # Epsilon-greedy action selection
-        if np.random.rand() <= epsilon:
-            action = random.randrange(action_size)
+class PrioritizedReplayBuffer:
+    def __init__(self, size):
+        self.buffer = []
+        self.priorities = []
+        self.max_priority = 1.0
+        self.size = size
+    
+    def add(self, experience, priority=None):
+        if priority is None:
+            priority = self.max_priority
+        if len(self.buffer) < self.size:
+            self.buffer.append(experience)
+            self.priorities.append(priority)
         else:
-            act_values = Q.predict(state)
-            action = np.argmax(act_values[0])
+            self.buffer.pop(0)
+            self.priorities.pop(0)
+            self.buffer.append(experience)
+            self.priorities.append(priority)
+    
+    def sample(self, batch_size, alpha, beta):
+        scaled_priorities = np.array(self.priorities) ** alpha
+        sample_probs = scaled_priorities / sum(scaled_priorities)
+        sampled_indices = np.random.choice(len(self.buffer), batch_size, p=sample_probs)
+        samples = [self.buffer[i] for i in sampled_indices]
+        is_weights = (1 / (len(self.buffer) * sample_probs[sampled_indices])) ** beta
+        is_weights /= is_weights.max()
+        return samples, sampled_indices, is_weights
+    
+    def update_priorities(self, indices, errors, epsilon):
+        for idx, error in zip(indices, errors):
+            self.priorities[idx] = min(self.max_priority, (abs(error) + epsilon))
 
-        next_state, reward, done, _ = env.step(action)
-        next_state = preprocess_state(next_state)
-        total_reward += reward
 
-        # Store transition in D
-        D.append((state, action, reward, next_state, done))
+def update_target_network(target, source):
+    target.load_state_dict(source.state_dict())
 
-        state = next_state
 
-        # Check if the episode is done
-        if done:
-            print(f"Episode: {episode}/{M}, Score: {total_reward}")
-            break
 
-        # Train using a random minibatch from D
-        if len(D) > 32:
-            minibatch = random.sample(D, 32)
-            for w, a, r, w_next, terminal in minibatch:
-                target = r
-                if not terminal:
-                    target = (r + gamma * np.amax(Q_hat.predict(w_next)[0]))
-                target_f = Q.predict(w)
-                target_f[0][a] = target
-                Q.fit(w, target_f, epochs=1, verbose=0)
+def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.4, beta_frames=50000, Q_weights=None, D=None, N=40000 ,max_step= 10000, explo_start=30000):
+    """The main function to train the DQN
 
-    # Update epsilon
-    if epsilon > epsilon_min:
-        epsilon *= epsilon_decay
+    Args:
+        M (int): The number of frames to train on.
+        env (gym.env): The environement to train on.
+        epsilon (float): The exploration factor.
+        epsilon_decay (float): The exploration factor decay.
+        epsilon_min (float): The minimum of the exploration factor.
+        gamma (float): The importance of future reward in the Q computation.
+        Q_weights (torch.state_duct, optional): Previous state dict of the model, to continue the training. Defaults to None.
+        D (deque, optional): _description_. Defaults to None.
+        N (int, optional): Size if the memory replay buffer_. Defaults to 40000.
+        max_step (int, optional): The maximum frames in one episode. Defaults to 10000.
 
-    # Update target network
-    if episode % C == 0:
-        Q_hat.set_weights(Q.get_weights())
+    Returns:
+        dict: A dict containing the loss list and rewards during training
+    """
+    
+    # Training loop
+    action_size = env.action_space.n  # Number of actions
+    state_size = env.observation_space.shape[0]  # State size
+
+    Q = DQN(action_size)
+    Q_hat = copy.deepcopy(Q)
+    if Q_weights is not None:
+        Q.load(Q_weights)
+        Q_hat = copy.deepcopy(Q)
+    
+    # Check if a GPU is available
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print("Using GPU:", torch.cuda.get_device_name(0))
+    else:
+        device = torch.device("cpu")
+        print("Using CPU")
+    
+    def preprocess_state(state):
+        return torch.tensor(np.asarray(state)).float().div(255).unsqueeze(0).to(device)  # Scales to [0,1]
+
+    Q.to(device)
+    Q_hat.to(device)
+
+    optimizer = optim.Adam(Q.parameters(), lr=0.0025)
+    criterion = nn.MSELoss()
+
+    if D is None:    
+        D = PrioritizedReplayBuffer(N)
+
+    frames = 0
+    reward_list = []
+    loss_list = []
+    episode = 0
+
+    beta = beta_start
+    pbar = tqdm(total=M)
+    while(frames < M):
+        total_reward = 0
+        state = preprocess_state(env.reset()[0])# Add batch dimension
+        for _ in range(max_step):
+            # Epsilon-greedy action selection
+            if frames < explo_start:
+                action = random.randrange(action_size)
+            elif np.random.rand() <= epsilon:
+                action = random.randrange(action_size)
+            else:
+                with torch.no_grad():  # No need to track gradients here
+                    act_values = Q(state)
+                    action = act_values.max(1)[1].item()  # Choose the action with the highest Q-value
+
+            # Execute action in environment and observe next state and reward
+            next_state, reward, done, _, _ = env.step(action)
+            total_reward += reward
+            frames += 1
+            pbar.update(1)
+
+
+            next_state = preprocess_state(next_state)
+
+            # Store transition in D (experience replay buffer)
+            D.add((state, action, reward, next_state, done))
+
+            state = next_state
+
+            # Check if the episode is done
+            if done :
+                episode += 1
+                if episode % 50 == 0:
+                    print(f"Episode: {episode}, Score: {total_reward}, Nb_frames : {frames}")
+                reward_list.append(total_reward)
+                break
+
+
+
+            # Train using a random minibatch from D
+            if D.size > explo_start:
+                minibatch, indices, is_weights = D.sample(32, alpha=0.6, beta=beta)
+                is_weights = torch.tensor(is_weights, device=device, dtype=torch.float)
+                # Extract tensors from the minibatch
+                states = torch.cat([s for s, a, r, ns, d in minibatch]).to(device)
+                actions = torch.tensor([a for s, a, r, ns, d in minibatch], device=device).long()
+                rewards = torch.tensor([r for s, a, r, ns, d in minibatch], device=device).float()
+                next_states = torch.cat([ns for s, a, r, ns, d in minibatch]).to(device)
+                dones = torch.tensor([d for s, a, r, ns, d in minibatch], device=device).float()
+
+
+                # Compute Q values for current states
+                Q_values = Q(states)
+                # Select the Q value for the action taken, which are the ones we want to update
+                Q_values = Q_values.gather(1, actions.unsqueeze(1)).squeeze(1)
+
+                # Compute the Q values for next states using the target network
+                with torch.no_grad():
+                    next_state_values = Q_hat(next_states).max(1)[0]
+                    # If done is true, we want to ignore the next state value
+                    next_state_values[dones == 1] = 0.0
+                    # Compute the target Q values
+                    target_Q_values = rewards + (gamma * next_state_values)
+
+                # Zero the parameter gradients
+                optimizer.zero_grad()
+                # Compute loss
+                loss = criterion(Q_values, target_Q_values) * is_weights
+                loss = loss.mean()
+                # Backward pass
+                loss.backward()
+                loss_list.append(loss.item())
+                torch.nn.utils.clip_grad_norm_(Q.parameters(), max_norm=1.0)
+                optimizer.step()
+                # Update priorities
+                with torch.no_grad():
+                    errors = torch.abs(Q_values - target_Q_values).cpu().numpy()
+                D.update_priorities(indices, errors, epsilon=1e-6)
+
+        if frames > explo_start:
+            beta =  min(1.0, 0.4 + frames * (1.0 - beta_start) / beta_frames)
+        # Update epsilon
+        if epsilon > epsilon_min and frames > explo_start:
+            epsilon *= epsilon_decay
+
+        # Update target network
+        if episode % 50 == 0 and frames > explo_start:
+            Q_hat.load_state_dict(Q.state_dict())
+
+        if episode % 100 == 0 and frames > explo_start:
+            torch.save(Q.state_dict(), 'Q.pt')
+
+    pbar.close()
+    torch.save(Q.state_dict(), 'Q.pt')
+    return {'reward_list': reward_list, 'loss_list': loss_list}
+
+
+if __name__ == "__main__":
+    env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
+    env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
+    env = gym.wrappers.FrameStack(env=env, num_stack=4)
+
+    dico = play_train(M=1000000, env=env, epsilon=1, epsilon_decay=0.99, epsilon_min=0.1, gamma=0.99, Q_weights=None, D=None, N=40000 ,max_step= 10000, explo_start=30000)
+    np.save('loss.npy', np.asarray(dico['loss_list']))
+    np.save('reward.npy', np.asarray(dico['reward_list']))
