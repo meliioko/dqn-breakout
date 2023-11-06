@@ -46,6 +46,7 @@ class PrioritizedReplayBuffer:
         self.priorities = []
         self.max_priority = 1.0
         self.size = size
+        self.len = 0
     
     def add(self, experience, priority=None):
         if priority is None:
@@ -53,6 +54,7 @@ class PrioritizedReplayBuffer:
         if len(self.buffer) < self.size:
             self.buffer.append(experience)
             self.priorities.append(priority)
+            self.len += 1
         else:
             self.buffer.pop(0)
             self.priorities.pop(0)
@@ -76,9 +78,11 @@ class PrioritizedReplayBuffer:
 def update_target_network(target, source):
     target.load_state_dict(source.state_dict())
 
+def preprocess_state(state, device):
+    return torch.tensor(np.asarray(state)).float().div(255).unsqueeze(0).to(device)  # Scales to [0,1]
 
 
-def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.4, beta_frames=50000, Q_weights=None, D=None, N=40000 ,max_step= 10000, explo_start=30000):
+def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,beta_start=0.4, beta_frames=500000, Q_weights=None, D=None, N=40000 ,max_step= 10000, explo_start=30000):
     """The main function to train the DQN
 
     Args:
@@ -115,8 +119,6 @@ def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.
         device = torch.device("cpu")
         print("Using CPU")
     
-    def preprocess_state(state):
-        return torch.tensor(np.asarray(state)).float().div(255).unsqueeze(0).to(device)  # Scales to [0,1]
 
     Q.to(device)
     Q_hat.to(device)
@@ -136,7 +138,10 @@ def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.
     pbar = tqdm(total=M)
     while(frames < M):
         total_reward = 0
-        state = preprocess_state(env.reset()[0])# Add batch dimension
+        state = env.reset()[0]
+        state, _, _, _, _ = env.step(1)
+
+        state = preprocess_state(state, device)# Add batch dimension
         for _ in range(max_step):
             # Epsilon-greedy action selection
             if frames < explo_start:
@@ -155,7 +160,7 @@ def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.
             pbar.update(1)
 
 
-            next_state = preprocess_state(next_state)
+            next_state = preprocess_state(next_state, device)
 
             # Store transition in D (experience replay buffer)
             D.add((state, action, reward, next_state, done))
@@ -173,8 +178,8 @@ def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.
 
 
             # Train using a random minibatch from D
-            if D.size > explo_start:
-                minibatch, indices, is_weights = D.sample(32, alpha=0.6, beta=beta)
+            if D.len > explo_start:
+                minibatch, indices, is_weights = D.sample(32, alpha=alpha, beta=beta)
                 is_weights = torch.tensor(is_weights, device=device, dtype=torch.float)
                 # Extract tensors from the minibatch
                 states = torch.cat([s for s, a, r, ns, d in minibatch]).to(device)
@@ -216,7 +221,7 @@ def play_train(M, env, epsilon, epsilon_decay, epsilon_min, gamma, beta_start=0.
             beta =  min(1.0, 0.4 + frames * (1.0 - beta_start) / beta_frames)
         # Update epsilon
         if epsilon > epsilon_min and frames > explo_start:
-            epsilon *= epsilon_decay
+            epsilon = max(epsilon_min, 1 - (frames - explo_start) / epsilon_frames)
 
         # Update target network
         if episode % 50 == 0 and frames > explo_start:
@@ -234,7 +239,8 @@ if __name__ == "__main__":
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
+    env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 100 == 0 and x > 300)
 
-    dico = play_train(M=1000000, env=env, epsilon=1, epsilon_decay=0.99, epsilon_min=0.1, gamma=0.99, Q_weights=None, D=None, N=40000 ,max_step= 10000, explo_start=30000)
+    dico = play_train(M=200000, env=env, epsilon=1, epsilon_frames=200000, epsilon_min=0.1, gamma=0.99, Q_weights=None, D=None, N=40000 ,max_step= 100000, explo_start=30000, beta_frames=200000, beta_start=0.4)
     np.save('loss.npy', np.asarray(dico['loss_list']))
     np.save('reward.npy', np.asarray(dico['reward_list']))
