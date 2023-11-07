@@ -42,31 +42,31 @@ class DQN(nn.Module):
 
 class PrioritizedReplayBuffer:
     def __init__(self, size):
-        self.buffer = []
-        self.priorities = []
+        self.buffer = np.empty((size), dtype=object)
+        self.priorities = np.zeros((size))
         self.max_priority = 1.0
         self.size = size
         self.len = 0
+        self.pos = 0
     
     def add(self, experience, priority=None):
         if priority is None:
             priority = self.max_priority
-        if len(self.buffer) < self.size:
-            self.buffer.append(experience)
-            self.priorities.append(priority)
+
+        self.buffer[self.pos] = experience
+        self.priorities[self.pos] = priority
+
+        if self.len < self.size:
             self.len += 1
-        else:
-            self.buffer.pop(0)
-            self.priorities.pop(0)
-            self.buffer.append(experience)
-            self.priorities.append(priority)
+
+        self.pos = (self.pos + 1) % self.size
     
     def sample(self, batch_size, alpha, beta):
-        scaled_priorities = np.array(self.priorities) ** alpha
-        sample_probs = scaled_priorities / sum(scaled_priorities)
+        scaled_priorities = self.priorities ** alpha
+        sample_probs = scaled_priorities / np.sum(scaled_priorities)
         sampled_indices = np.random.choice(len(self.buffer), batch_size, p=sample_probs)
         samples = [self.buffer[i] for i in sampled_indices]
-        is_weights = (1 / (len(self.buffer) * sample_probs[sampled_indices])) ** beta
+        is_weights = (1 / self.len * sample_probs[sampled_indices]) ** beta
         is_weights /= is_weights.max()
         return samples, sampled_indices, is_weights
     
@@ -82,7 +82,7 @@ def preprocess_state(state, device):
     return torch.tensor(np.asarray(state)).float().div(255).unsqueeze(0).to(device)  # Scales to [0,1]
 
 
-def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,beta_start=0.4, beta_frames=500000, Q_weights=None, D=None, N=40000 ,max_step= 10000, explo_start=30000):
+def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,beta_start=0.4, beta_frames=500000, Q_weights=None, N=40000 ,max_step= 10000, explo_start=30000):
     """The main function to train the DQN
 
     Args:
@@ -106,10 +106,10 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
     state_size = env.observation_space.shape[0]  # State size
 
     Q = DQN(action_size)
-    Q_hat = copy.deepcopy(Q)
     if Q_weights is not None:
-        Q.load(Q_weights)
-        Q_hat = copy.deepcopy(Q)
+        Q.load_state_dict(torch.load(Q_weights))
+
+    Q_hat = copy.deepcopy(Q)
     
     # Check if a GPU is available
     if torch.cuda.is_available():
@@ -123,15 +123,13 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
     Q.to(device)
     Q_hat.to(device)
 
-    optimizer = optim.Adam(Q.parameters(), lr=0.0025)
+    optimizer = optim.Adam(Q.parameters(), lr=0.00025)
     criterion = nn.MSELoss()
 
-    if D is None:    
-        D = PrioritizedReplayBuffer(N)
+    D = PrioritizedReplayBuffer(N)
 
     frames = 0
     reward_list = []
-    loss_list = []
     episode = 0
 
     beta = beta_start
@@ -144,9 +142,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
         state = preprocess_state(state, device)# Add batch dimension
         for _ in range(max_step):
             # Epsilon-greedy action selection
-            if frames < explo_start:
-                action = random.randrange(action_size)
-            elif np.random.rand() <= epsilon:
+            if np.random.rand() <= epsilon:
                 action = random.randrange(action_size)
             else:
                 with torch.no_grad():  # No need to track gradients here
@@ -209,7 +205,6 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
                 loss = loss.mean()
                 # Backward pass
                 loss.backward()
-                loss_list.append(loss.item())
                 torch.nn.utils.clip_grad_norm_(Q.parameters(), max_norm=1.0)
                 optimizer.step()
                 # Update priorities
@@ -232,15 +227,14 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
 
     pbar.close()
     torch.save(Q.state_dict(), 'Q.pt')
-    return {'reward_list': reward_list, 'loss_list': loss_list}
+    return reward_list
 
 
 if __name__ == "__main__":
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
-    env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 100 == 0 and x > 300)
+    #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 100 == 0 and x > 300)
 
-    dico = play_train(M=200000, env=env, epsilon=1, epsilon_frames=200000, epsilon_min=0.1, gamma=0.99, Q_weights=None, D=None, N=40000 ,max_step= 100000, explo_start=30000, beta_frames=200000, beta_start=0.4)
-    np.save('loss.npy', np.asarray(dico['loss_list']))
-    np.save('reward.npy', np.asarray(dico['reward_list']))
+    reward_list = play_train(M=80000, env=env, epsilon=0.7, epsilon_frames=8000, epsilon_min=0.1, gamma=0.99, Q_weights='results/v1/Q_v1.pt', N=40000 ,max_step=100000, explo_start=30000, beta_frames=1000000, beta_start=0.4)
+    np.save('reward.npy', np.asarray(reward_list))
