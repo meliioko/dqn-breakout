@@ -82,7 +82,7 @@ def preprocess_state(state, device):
     return torch.tensor(np.asarray(state)).float().div(255).unsqueeze(0).to(device)  # Scales to [0,1]
 
 
-def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,beta_start=0.4, beta_frames=500000, Q_weights=None, N=40000 ,max_step= 10000, explo_start=30000):
+def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,beta_start=0.4, beta_frames=500000, Q_weights=None, N=40000 ,max_step= 10000, explo_start=30000):
     """The main function to train the DQN
 
     Args:
@@ -133,6 +133,9 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
     episode = 0
 
     beta = beta_start
+    last_update = explo_start
+    last_save = explo_start
+
     pbar = tqdm(total=M)
     while(frames < M):
         total_reward = 0
@@ -166,8 +169,6 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
             # Check if the episode is done
             if done :
                 episode += 1
-                if episode % 50 == 0:
-                    print(f"Episode: {episode}, Score: {total_reward}, Nb_frames : {frames}")
                 reward_list.append(total_reward)
                 break
 
@@ -219,14 +220,17 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.6,be
             epsilon = max(epsilon_min, 1 - (frames - explo_start) / epsilon_frames)
 
         # Update target network
-        if episode % 50 == 0 and frames > explo_start:
+        if frames - last_update > 10000:
             Q_hat.load_state_dict(Q.state_dict())
+            last_update = frames
 
-        if episode % 100 == 0 and frames > explo_start:
-            torch.save(Q.state_dict(), 'Q.pt')
+        if frames - last_save > 300000:
+            torch.save(Q.state_dict(), f'models/Q_v2_{frames}.pt')
+            np.save(f'rewards/reward_v2_{frames}.npy', np.asarray(reward_list))
+            last_save = frames
 
     pbar.close()
-    torch.save(Q.state_dict(), 'Q.pt')
+    torch.save(Q.state_dict(), 'Q_v2_final.pt')
     return reward_list
 
 
@@ -236,5 +240,5 @@ if __name__ == "__main__":
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
     #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 100 == 0 and x > 300)
 
-    reward_list = play_train(M=80000, env=env, epsilon=0.7, epsilon_frames=8000, epsilon_min=0.1, gamma=0.99, Q_weights='results/v1/Q_v1.pt', N=40000 ,max_step=100000, explo_start=30000, beta_frames=1000000, beta_start=0.4)
-    np.save('reward.npy', np.asarray(reward_list))
+    reward_list = play_train(M=4000000, env=env, epsilon=0.4, epsilon_frames=1000000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000, beta_frames=800000, beta_start=0.4)
+    np.save('rewards/reward_v2_final.npy', np.asarray(reward_list))
