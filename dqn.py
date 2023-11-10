@@ -92,7 +92,7 @@ def preprocess_state(state, device):
     return torch.tensor(np.asarray(state)).float().div(255).unsqueeze(0).to(device)  # Scales to [0,1]
 
 
-def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,beta_start=0.4, beta_frames=500000, Q_weights=None, N=40000 ,max_step= 10000, explo_start=30000):
+def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=None, N=40000 ,max_step= 10000, explo_start=30000):
     """The main function to train the DQN
 
     Args:
@@ -110,7 +110,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,be
     Returns:
         dict: A dict containing the loss list and rewards during training
     """
-    
+    version = 'NoPrio'
     # Training loop
     action_size = env.action_space.n  # Number of actions
     state_size = env.observation_space.shape[0]  # State size
@@ -142,7 +142,6 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,be
     reward_list = []
     episode = 0
 
-    beta = beta_start
     last_update = explo_start
     last_save = explo_start
 
@@ -186,8 +185,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,be
 
             # Train using a random minibatch from D
             if D.len > explo_start:
-                minibatch, indices, is_weights = D.sample(32, alpha=alpha, beta=beta)
-                is_weights = torch.tensor(is_weights, device=device, dtype=torch.float)
+                minibatch = D.sample(32)
                 # Extract tensors from the minibatch
                 states = torch.cat([s for s, a, r, ns, d in minibatch]).to(device)
                 actions = torch.tensor([a for s, a, r, ns, d in minibatch], device=device).long()
@@ -218,13 +216,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,be
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(Q.parameters(), max_norm=1.0)
                 optimizer.step()
-                # Update priorities
-                with torch.no_grad():
-                    errors = torch.abs(Q_values - target_Q_values).cpu().numpy()
-                D.update_priorities(indices, errors, epsilon=1e-6)
 
-        if frames > explo_start:
-            beta =  min(1.0, 0.4 + frames * (1.0 - beta_start) / beta_frames)
         # Update epsilon
         if epsilon > epsilon_min and frames > explo_start:
             epsilon = max(epsilon_min, 1 - (frames - explo_start) / epsilon_frames)
@@ -235,12 +227,12 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, alpha=0.7,be
             last_update = frames
 
         if frames - last_save > 300000:
-            torch.save(Q.state_dict(), f'models/Q_v2_{frames}.pt')
-            np.save(f'rewards/reward_v2_{frames}.npy', np.asarray(reward_list))
+            torch.save(Q.state_dict(), f'models/Q_{version}_{frames}.pt')
+            np.save(f'rewards/reward_{version}_{frames}.npy', np.asarray(reward_list))
             last_save = frames
 
     pbar.close()
-    torch.save(Q.state_dict(), 'Q_v2_final.pt')
+    torch.save(Q.state_dict(), 'Q_{version}_final.pt')
     return reward_list
 
 
@@ -250,5 +242,5 @@ if __name__ == "__main__":
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
     #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 100 == 0 and x > 300)
 
-    reward_list = play_train(M=4000000, env=env, epsilon=0.4, epsilon_frames=1000000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000, beta_frames=800000, beta_start=0.4)
-    np.save('rewards/reward_v2_final.npy', np.asarray(reward_list))
+    reward_list = play_train(M=4000000, env=env, epsilon=0.4, epsilon_frames=1000000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000, beta_frames=800000)
+    np.save('rewards/reward_{version}_final.npy', np.asarray(reward_list))
