@@ -74,6 +74,16 @@ class PrioritizedReplayBuffer:
         for idx, error in zip(indices, errors):
             self.priorities[idx] = min(self.max_priority, (abs(error) + epsilon))
 
+class ReplayBuffer:
+    def __init__(self, size):
+        self.buffer = deque(size)
+
+    def add(experiment):
+        self.buffer.append(experiment)
+    
+    def sample(n):
+        return random.sample(self.buffer, n)
+
 
 def update_target_network(target, source):
     target.load_state_dict(source.state_dict())
