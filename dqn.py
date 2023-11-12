@@ -40,6 +40,7 @@ class DQN(nn.Module):
 
         return self.fc(x)
 
+
 class PrioritizedReplayBuffer:
     def __init__(self, size):
         self.buffer = np.empty((size), dtype=object)
@@ -76,13 +77,14 @@ class PrioritizedReplayBuffer:
 
 class ReplayBuffer:
     def __init__(self, size):
-        self.buffer = deque(size)
+        self.buffer = deque([], size)
 
-    def add(experiment):
+    def add(self, experiment):
         self.buffer.append(experiment)
     
-    def sample(n):
+    def sample(self, n):
         return random.sample(self.buffer, n)
+    
 
 
 def update_target_network(target, source):
@@ -110,7 +112,6 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
     Returns:
         dict: A dict containing the loss list and rewards during training
     """
-    version = 'NoPrio'
     # Training loop
     action_size = env.action_space.n  # Number of actions
     state_size = env.observation_space.shape[0]  # State size
@@ -136,7 +137,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
     optimizer = optim.Adam(Q.parameters(), lr=0.00025)
     criterion = nn.MSELoss()
 
-    D = PrioritizedReplayBuffer(N)
+    D = ReplayBuffer(N)
 
     frames = 0
     reward_list = []
@@ -184,7 +185,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
 
 
             # Train using a random minibatch from D
-            if D.len > explo_start:
+            if frames > explo_start:
                 minibatch = D.sample(32)
                 # Extract tensors from the minibatch
                 states = torch.cat([s for s, a, r, ns, d in minibatch]).to(device)
@@ -210,7 +211,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
                 # Zero the parameter gradients
                 optimizer.zero_grad()
                 # Compute loss
-                loss = criterion(Q_values, target_Q_values) * is_weights
+                loss = criterion(Q_values, target_Q_values)
                 loss = loss.mean()
                 # Backward pass
                 loss.backward()
@@ -232,15 +233,16 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
             last_save = frames
 
     pbar.close()
-    torch.save(Q.state_dict(), 'Q_{version}_final.pt')
+    torch.save(Q.state_dict(), f'Q_{version}_final.pt')
     return reward_list
 
 
 if __name__ == "__main__":
+    version = 'NoPrioV3'
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
-    #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 100 == 0 and x > 300)
+    #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 2000 == 0 and x > 300)
 
-    reward_list = play_train(M=4000000, env=env, epsilon=0.4, epsilon_frames=1000000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000, beta_frames=800000)
-    np.save('rewards/reward_{version}_final.npy', np.asarray(reward_list))
+    reward_list = play_train(M=2000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights='results/noprio/Q.pt', N=45000 ,max_step=100000, explo_start=30000)
+    np.save(f'rewards/reward_{version}_final.npy', np.asarray(reward_list))
