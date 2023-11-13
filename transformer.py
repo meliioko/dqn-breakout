@@ -26,7 +26,7 @@ class TransformerBlock(nn.Module):
         return src
 
 class PatchEmbedding(nn.Module):
-    def __init__(self, in_channels=1, patch_size=14, emb_size=256):
+    def __init__(self, in_channels=4, patch_size=14, emb_size=256):
         super().__init__()
         self.patch_size = patch_size
         self.projection = nn.Sequential(

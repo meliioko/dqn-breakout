@@ -7,6 +7,7 @@ import copy
 import random
 import numpy as np
 import gym
+from transformer import TransformerDQN
 
 class DQN(nn.Module):
     def __init__(self, action_size):
@@ -116,7 +117,15 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
     action_size = env.action_space.n  # Number of actions
     state_size = env.observation_space.shape[0]  # State size
 
-    Q = DQN(action_size)
+    Q = TransformerDQN(
+    action_size=env.action_space.n,  # Replace with the number of actions in your environment
+    d_model=256,
+    nhead=4,
+    num_layers=3,
+    dim_feedforward=1024,
+    dropout=0.1
+)
+
     if Q_weights is not None:
         Q.load_state_dict(torch.load(Q_weights))
 
@@ -238,11 +247,11 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
 
 
 if __name__ == "__main__":
-    version = 'NoPrioV3'
+    version = 'TransformerV1'
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
     #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 2000 == 0 and x > 300)
 
-    reward_list = play_train(M=2000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights='results/noprio/Q.pt', N=45000 ,max_step=100000, explo_start=30000)
+    reward_list = play_train(M=2000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000)
     np.save(f'rewards/reward_{version}_final.npy', np.asarray(reward_list))
