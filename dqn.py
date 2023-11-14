@@ -40,6 +40,50 @@ class DQN(nn.Module):
 
         return self.fc(x)
 
+class DuelingDQN(nn.Module):
+    def __init__(self, action_size):
+        super(DuelingDQN, self).__init__()
+
+        # Convolutional layers are the same
+        self.conv1 = nn.Conv2d(4, 32, kernel_size=8, stride=4)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=4, stride=2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, stride=1)
+
+        # Compute the size of the output of the last conv layer
+        def conv2d_size_out(size, kernel_size=3, stride=1):
+            return (size - (kernel_size - 1) - 1) // stride + 1
+
+        convw = conv2d_size_out(conv2d_size_out(conv2d_size_out(84, 8, 4), 4, 2), 3, 1)
+        convh = conv2d_size_out(conv2d_size_out(conv2d_size_out(84, 8, 4), 4, 2), 3, 1)
+        linear_input_size = convw * convh * 64
+
+        # Separate streams for V(s) and A(s, a)
+        self.fc_value = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(linear_input_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, 1)  # This outputs V(s)
+        )
+
+        self.fc_advantage = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(linear_input_size, 512),
+            nn.ReLU(),
+            nn.Linear(512, action_size)  # This outputs A(s, a)
+        )
+
+    def forward(self, x):
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.relu(self.conv3(x))
+
+        value = self.fc_value(x)
+        advantage = self.fc_advantage(x)
+
+        # Combine value and advantage streams
+        q_values = value + (advantage - advantage.mean(dim=1, keepdim=True))
+
+        return q_values
 
 class PrioritizedReplayBuffer:
     def __init__(self, size):
@@ -116,7 +160,7 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
     action_size = env.action_space.n  # Number of actions
     state_size = env.observation_space.shape[0]  # State size
 
-    Q = DQN(action_size)
+    Q = DuelingDQN(action_size)
     if Q_weights is not None:
         Q.load_state_dict(torch.load(Q_weights))
 
@@ -238,11 +282,11 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
 
 
 if __name__ == "__main__":
-    version = 'NoPrioV3'
+    version = 'DuelV1'
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
     #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 2000 == 0 and x > 300)
 
-    reward_list = play_train(M=2000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights='results/noprio/Q.pt', N=45000 ,max_step=100000, explo_start=30000)
+    reward_list = play_train(M=2000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000)
     np.save(f'rewards/reward_{version}_final.npy', np.asarray(reward_list))

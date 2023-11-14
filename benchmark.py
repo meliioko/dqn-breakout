@@ -1,5 +1,5 @@
 import torch
-from dqn import DQN, preprocess_state
+from dqn import DQN, preprocess_state, DuelingDQN
 import gym
 import random
 import numpy as np
@@ -14,7 +14,7 @@ def test(model, nb_episode, name, epsilon=0.1):
     env = gym.wrappers.RecordVideo(env, f'test/videos_{name}', episode_trigger=lambda x : x % 50 == 0)
 
     device = torch.device("cuda")
-    Q = DQN(env.action_space.n)
+    Q = DuelingDQN(env.action_space.n)
     Q.load_state_dict(torch.load(model))
     Q.to(device)
 
@@ -55,5 +55,4 @@ def test(model, nb_episode, name, epsilon=0.1):
     np.save(f'test/{name}_rewards.npy', np.asarray(rewards))
 
 if __name__ == '__main__':
-    for folder in os.listdir('results'):
-        test(f'results/{folder}/Q.pt', 100, folder, epsilon=0.1)
+    test(f'results/duelv1/Q.pt', 100, 'duelv1', epsilon=0.1)
