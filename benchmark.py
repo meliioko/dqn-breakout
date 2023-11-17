@@ -7,6 +7,8 @@ import os
 from tqdm import tqdm
 
 def test(model, nb_episode, name, epsilon=0.1):
+    if os.path.exists(f'test/{name}_rewards.npy'):
+        return
     device = torch.device('cuda')
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=False, noop_max=30)
@@ -55,4 +57,5 @@ def test(model, nb_episode, name, epsilon=0.1):
     np.save(f'test/{name}_rewards.npy', np.asarray(rewards))
 
 if __name__ == '__main__':
-    test(f'results/duelv1/Q.pt', 100, 'duelv1', epsilon=0.1)
+    for model in os.listdir('results'):
+        test(f'results/{model}/Q.pt', 100, model, epsilon=0.1)
