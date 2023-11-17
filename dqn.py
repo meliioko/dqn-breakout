@@ -282,11 +282,11 @@ def play_train(M, env, epsilon, epsilon_frames, epsilon_min, gamma, Q_weights=No
 
 
 if __name__ == "__main__":
-    version = 'DuelV1'
+    version = 'DuelV2'
     env = gym.make("Breakout-v4", obs_type='grayscale', render_mode='rgb_array', full_action_space=False, frameskip=4)
     env = gym.wrappers.AtariPreprocessing(env=env, frame_skip=1, terminal_on_life_loss=True)
     env = gym.wrappers.FrameStack(env=env, num_stack=4)
     #env = gym.wrappers.RecordVideo(env, 'videos', episode_trigger= lambda x : x % 2000 == 0 and x > 300)
 
-    reward_list = play_train(M=2000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights=None, N=45000 ,max_step=100000, explo_start=30000)
+    reward_list = play_train(M=3000000, env=env, epsilon=0.1, epsilon_frames=100000, epsilon_min=0.1, gamma=0.99, Q_weights='results/duelv1/Q.pt', N=45000 ,max_step=100000, explo_start=30000)
     np.save(f'rewards/reward_{version}_final.npy', np.asarray(reward_list))
